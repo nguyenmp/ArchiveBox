@@ -21,7 +21,7 @@ from .wget_util import wget_output_path
 class WgetConfig(BaseConfigSet):
 
     SAVE_WGET: bool = True
-    SAVE_WARC: bool = True
+    SAVE_WARC: bool = False
     
     USE_WGET: bool = Field(default=lambda c: c.SAVE_WGET or c.SAVE_WARC)
     
