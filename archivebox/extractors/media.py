@@ -81,7 +81,7 @@ def save_media(link: Link, out_dir: Optional[Path]=None, timeout: int=0) -> Arch
                     'Got yt-dlp response code: {}.'.format(result.returncode),
                     *result.stderr.split('\n'),
                 )
-                raise ArchiveError('Failed to save media', hints)
+                raise ArchiveError('Failed to save media ' + ' '.join(hints), hints)
     except Exception as err:
         status = 'failed'
         output = err
