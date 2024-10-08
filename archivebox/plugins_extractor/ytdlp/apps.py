@@ -21,7 +21,7 @@ class YtdlpConfig(BaseConfigSet):
     USE_YTDLP: bool               = Field(default=True, validation_alias=AliasChoices('USE_YOUTUBEDL', 'SAVE_MEDIA'))
 
     YTDLP_BINARY: str             = Field(default='yt-dlp', alias='YOUTUBEDL_BINARY')
-    YTDLP_EXTRA_ARGS: List[str]   = Field(default=["--write-description", "--skip-download", "--write-subs", "--cache-dir", "/data/yt-dlp-cache/", "--username", "oauth2" "--password", ""], alias='YOUTUBEDL_EXTRA_ARGS')
+    YTDLP_EXTRA_ARGS: List[str]   = Field(default=["--write-description", "--skip-download", "--write-subs", "--cache-dir", "/data/yt-dlp-cache/", "--username", "oauth2", "--password", ""], alias='YOUTUBEDL_EXTRA_ARGS')
     
     YTDLP_CHECK_SSL_VALIDITY: bool = Field(default=lambda: ARCHIVING_CONFIG.CHECK_SSL_VALIDITY)
     YTDLP_TIMEOUT: int             = Field(default=lambda: ARCHIVING_CONFIG.MEDIA_TIMEOUT)
