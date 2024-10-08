@@ -1,5 +1,6 @@
 __package__ = 'archivebox.core'
 
+import os
 import inspect
 from typing import Callable, get_type_hints
 from pathlib import Path
@@ -27,7 +28,8 @@ from core.admin import result_url
 
 from queues.tasks import bg_add
 
-from archivebox.config import CONSTANTS_CONFIG, DATA_DIR, VERSION, SHELL_CONFIG, SERVER_CONFIG
+from archivebox.config import CONSTANTS_CONFIG, DATA_DIR, VERSION
+from archivebox.config.common import SHELL_CONFIG, SERVER_CONFIG
 from archivebox.misc.util import base_url, htmlencode, ts_to_date_str
 
 from .serve_static import serve_static_with_byterange_support
@@ -66,6 +68,7 @@ class SnapshotView(View):
             if (result.status == 'succeeded'
                 and (result.extractor not in HIDDEN_RESULTS)
                 and embed_path
+                and os.access(abs_path, os.R_OK)
                 and abs_path.exists()):
                 if abs_path.is_dir() and not any(abs_path.glob('*.*')):
                     continue
@@ -101,6 +104,8 @@ class SnapshotView(View):
 
         # iterate through all the files in the snapshot dir and add the biggest ones to1 the result list
         snap_dir = Path(snapshot.link_dir)
+        assert os.access(snap_dir, os.R_OK) and os.access(snap_dir, os.X_OK)
+        
         for result_file in (*snap_dir.glob('*'), *snap_dir.glob('*/*')):
             extension = result_file.suffix.lstrip('.').lower()
             if result_file.is_dir() or result_file.name.startswith('.') or extension not in allowed_extensions:

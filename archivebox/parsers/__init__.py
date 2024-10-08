@@ -13,7 +13,8 @@ from typing import IO, Tuple, List, Optional
 from datetime import datetime, timezone
 from pathlib import Path 
 
-from archivebox.config import DATA_DIR, CONSTANTS, SHELL_CONFIG, ARCHIVING_CONFIG
+from archivebox.config import DATA_DIR, CONSTANTS
+from archivebox.config.common import SHELL_CONFIG, ARCHIVING_CONFIG
 from archivebox.misc.system import atomic_write
 from archivebox.misc.logging import stderr, hint
 from archivebox.misc.util import (
@@ -148,12 +149,13 @@ def save_text_as_source(raw_text: str, filename: str='{ts}-stdin.txt', out_dir: 
 
     referenced_texts = ''
 
-    for entry in raw_text.split():
-        try:
-            if Path(entry).exists():
-                referenced_texts += Path(entry).read_text()
-        except Exception as err:
-            print(err)
+    # dont attempt to read local files from the text, security risk:
+    # for entry in raw_text.split():
+    #     try:
+    #         if Path(entry).exists():
+    #             referenced_texts += Path(entry).read_text()
+    #     except Exception as err:
+    #         print(err)
 
     atomic_write(source_path, raw_text + '\n' + referenced_texts)
     log_source_saved(source_file=source_path)

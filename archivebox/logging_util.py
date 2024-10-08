@@ -22,7 +22,8 @@ from rich.panel import Panel
 from rich_argparse import RichHelpFormatter
 from django.core.management.base import DjangoHelpFormatter
 
-from archivebox.config import CONSTANTS, DATA_DIR, VERSION, SHELL_CONFIG
+from archivebox.config import CONSTANTS, DATA_DIR, VERSION
+from archivebox.config.common import SHELL_CONFIG
 from archivebox.misc.system import get_dir_size
 from archivebox.misc.util import enforce_types
 from archivebox.misc.logging import ANSI, stderr
@@ -477,7 +478,7 @@ def log_list_finished(links):
 def log_removal_started(links: List["Link"], yes: bool, delete: bool):
     print(f'[yellow3][i] Found {len(links)} matching URLs to remove.[/]')
     if delete:
-        file_counts = [link.num_outputs for link in links if Path(link.link_dir).exists()]
+        file_counts = [link.num_outputs for link in links if os.access(link.link_dir, os.R_OK)]
         print(
             f'    {len(links)} Links will be de-listed from the main index, and their archived content folders will be deleted from disk.\n'
             f'    ({len(file_counts)} data folders with {sum(file_counts)} archived files will be deleted!)'
@@ -571,7 +572,7 @@ def printable_folder_status(name: str, folder: Dict) -> str:
 
 
     if folder['path']:
-        if Path(folder['path']).exists():
+        if os.access(folder['path'], os.R_OK):
             num_files = (
                 f'{len(os.listdir(folder["path"]))} files'
                 if Path(folder['path']).is_dir() else

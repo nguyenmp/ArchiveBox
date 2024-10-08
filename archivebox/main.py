@@ -14,13 +14,15 @@ from crontab import CronTab, CronSlices
 from django.db.models import QuerySet
 from django.utils import timezone
 
-from archivebox.config import CONSTANTS, VERSION, DATA_DIR, ARCHIVE_DIR, SHELL_CONFIG, SEARCH_BACKEND_CONFIG, STORAGE_CONFIG, SERVER_CONFIG, ARCHIVING_CONFIG
+from archivebox.config import CONSTANTS, VERSION, DATA_DIR, ARCHIVE_DIR
+from archivebox.config.common import SHELL_CONFIG, SEARCH_BACKEND_CONFIG, STORAGE_CONFIG, SERVER_CONFIG, ARCHIVING_CONFIG
+from archivebox.config.permissions import SudoPermission, IN_DOCKER
 from .cli import (
     CLI_SUBCOMMANDS,
     run_subcommand,
     display_first,
     meta_cmds,
-    main_cmds,
+    setup_cmds,
     archive_cmds,
 )
 from .parsers import (
@@ -101,7 +103,7 @@ def help(out_dir: Path=DATA_DIR) -> None:
     ) + '\n\n    ' + '\n    '.join(
         f'[green]{cmd.ljust(20)}[/green] {func.__doc__}'
         for cmd, func in all_subcommands.items()
-        if cmd in main_cmds
+        if cmd in setup_cmds
     ) + '\n\n    ' + '\n    '.join(
         f'[green]{cmd.ljust(20)}[/green] {func.__doc__}'
         for cmd, func in all_subcommands.items()
@@ -119,10 +121,10 @@ def help(out_dir: Path=DATA_DIR) -> None:
 
     [grey53]# using Docker:[/grey53]
     [blue]docker run[/blue] -v [light_slate_blue]$PWD:/data[/light_slate_blue] [grey53]-p 8000:8000[/grey53] -it [dark_green]archivebox/archivebox[/dark_green] [green]\\[command][/green] [green3][...args][/green3] [violet][--help][/violet] [grey53][--version][/grey53]
-''' if SHELL_CONFIG.IN_DOCKER else ''
-    DOCKER_DOCS = '\n    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Docker#usage]https://github.com/ArchiveBox/ArchiveBox/wiki/Docker[/link]' if SHELL_CONFIG.IN_DOCKER else ''
-    DOCKER_OUTSIDE_HINT = "\n    [grey53]# outside of Docker:[/grey53]" if SHELL_CONFIG.IN_DOCKER else ''
-    DOCKER_CMD_PREFIX = "[blue]docker ... [/blue]" if SHELL_CONFIG.IN_DOCKER else ''
+''' if IN_DOCKER else ''
+    DOCKER_DOCS = '\n    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Docker#usage]https://github.com/ArchiveBox/ArchiveBox/wiki/Docker[/link]' if IN_DOCKER else ''
+    DOCKER_OUTSIDE_HINT = "\n    [grey53]# outside of Docker:[/grey53]" if IN_DOCKER else ''
+    DOCKER_CMD_PREFIX = "[blue]docker ... [/blue]" if IN_DOCKER else ''
 
     print(f'''{DOCKER_USAGE}
 [deep_sky_blue4]Usage:[/deep_sky_blue4]{DOCKER_OUTSIDE_HINT}
@@ -138,7 +140,7 @@ def help(out_dir: Path=DATA_DIR) -> None:
 ''')
     
     
-    if CONSTANTS.ARCHIVE_DIR.exists():
+    if os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) and CONSTANTS.ARCHIVE_DIR.is_dir():
         pretty_out_dir = str(out_dir).replace(str(Path('~').expanduser()), '~')
         EXAMPLE_USAGE = f'''
 [light_slate_blue]DATA DIR[/light_slate_blue]: [yellow]{pretty_out_dir}[/yellow]
@@ -158,7 +160,7 @@ def help(out_dir: Path=DATA_DIR) -> None:
         print(Panel(EXAMPLE_USAGE, expand=False, border_style='grey53', title='[green3]:white_check_mark: A collection [light_slate_blue]DATA DIR[/light_slate_blue] is currently active[/green3]', subtitle='Commands run inside this dir will only apply to this collection.'))
     else:
         DATA_SETUP_HELP = '\n'
-        if SHELL_CONFIG.IN_DOCKER:
+        if IN_DOCKER:
             DATA_SETUP_HELP += '[violet]Hint:[/violet] When using Docker, you need to mount a volume to use as your data dir:\n'
             DATA_SETUP_HELP += '    docker run [violet]-v /some/path/data:/data[/violet] archivebox/archivebox ...\n\n'
         DATA_SETUP_HELP += 'To load an [dark_blue]existing[/dark_blue] collection:\n'
@@ -190,6 +192,8 @@ def version(quiet: bool=False,
     
     from plugins_auth.ldap.apps import LDAP_CONFIG
     from django.conf import settings
+    from archivebox.config.version import get_COMMIT_HASH, get_BUILD_TIME
+    from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, RUNNING_AS_UID, RUNNING_AS_GID
 
     # 0.7.1
     # ArchiveBox v0.7.1+editable COMMIT_HASH=951bba5 BUILD_TIME=2023-12-17 16:46:05 1702860365
@@ -198,13 +202,14 @@ def version(quiet: bool=False,
     # DEBUG=False IS_TTY=True TZ=UTC SEARCH_BACKEND=ripgrep LDAP=False
     
     p = platform.uname()
+    COMMIT_HASH = get_COMMIT_HASH()
     prnt(
         '[dark_green]ArchiveBox[/dark_green] [dark_goldenrod]v{}[/dark_goldenrod]'.format(CONSTANTS.VERSION),
-        f'COMMIT_HASH={SHELL_CONFIG.COMMIT_HASH[:7] if SHELL_CONFIG.COMMIT_HASH else "unknown"}',
-        f'BUILD_TIME={SHELL_CONFIG.BUILD_TIME}',
+        f'COMMIT_HASH={COMMIT_HASH[:7] if COMMIT_HASH else "unknown"}',
+        f'BUILD_TIME={get_BUILD_TIME()}',
     )
     prnt(
-        f'IN_DOCKER={SHELL_CONFIG.IN_DOCKER}',
+        f'IN_DOCKER={IN_DOCKER}',
         f'IN_QEMU={SHELL_CONFIG.IN_QEMU}',
         f'ARCH={p.machine}',
         f'OS={p.system}',
@@ -212,11 +217,13 @@ def version(quiet: bool=False,
         f'PYTHON={sys.implementation.name.title()}',
     )
     OUTPUT_IS_REMOTE_FS = CONSTANTS.DATA_LOCATIONS.DATA_DIR.is_mount or CONSTANTS.DATA_LOCATIONS.ARCHIVE_DIR.is_mount
+    DATA_DIR_STAT = CONSTANTS.DATA_DIR.stat()
     prnt(
+        f'EUID={os.geteuid()} UID={RUNNING_AS_UID} PUID={ARCHIVEBOX_USER} FS_UID={DATA_DIR_STAT.st_uid}',
+        f'EGID={os.getegid()} GID={RUNNING_AS_GID} PGID={ARCHIVEBOX_GROUP} FS_GID={DATA_DIR_STAT.st_gid}',
+        f'FS_PERMS={STORAGE_CONFIG.OUTPUT_PERMISSIONS}',
         f'FS_ATOMIC={STORAGE_CONFIG.ENFORCE_ATOMIC_WRITES}',
         f'FS_REMOTE={OUTPUT_IS_REMOTE_FS}',
-        f'FS_USER={SHELL_CONFIG.PUID}:{SHELL_CONFIG.PGID}',
-        f'FS_PERMS={STORAGE_CONFIG.OUTPUT_PERMISSIONS}',
     )
     prnt(
         f'DEBUG={SHELL_CONFIG.DEBUG}',
@@ -229,6 +236,7 @@ def version(quiet: bool=False,
     prnt()
 
     prnt('[pale_green1][i] Dependency versions:[/pale_green1]')
+    failures = []
     for name, binary in reversed(list(settings.BINARIES.items())):
         if binary.name == 'archivebox':
             continue
@@ -247,6 +255,8 @@ def version(quiet: bool=False,
         else:
             abspath = f'[red]{err}[/red]'
         prnt('', '[green]√[/green]' if loaded_bin.is_valid else '[red]X[/red]', '', loaded_bin.name.ljust(21), str(loaded_bin.version).ljust(12), provider_summary, abspath, overflow='ignore', crop=False)
+        if not loaded_bin.is_valid:
+            failures.append(loaded_bin.name)
 
     prnt()
     prnt('[deep_sky_blue3][i] Source-code locations:[/deep_sky_blue3]')
@@ -254,16 +264,47 @@ def version(quiet: bool=False,
         prnt(printable_folder_status(name, path), overflow='ignore', crop=False)
 
     prnt()
-    if CONSTANTS.ARCHIVE_DIR.exists() or CONSTANTS.CONFIG_FILE.exists():
+    if os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) or os.access(CONSTANTS.CONFIG_FILE, os.R_OK):
         prnt('[bright_yellow][i] Data locations:[/bright_yellow]')
         for name, path in CONSTANTS.DATA_LOCATIONS.items():
             prnt(printable_folder_status(name, path), overflow='ignore', crop=False)
+    
+        from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, DEFAULT_PUID, DEFAULT_PGID, IS_ROOT, USER
+        
+        data_dir_stat = Path(DATA_DIR).stat()
+        data_dir_uid, data_dir_gid = data_dir_stat.st_uid, data_dir_stat.st_gid
+        data_owned_by_root = data_dir_uid == 0
+        
+        # data_owned_by_default_user = data_dir_uid == DEFAULT_PUID or data_dir_gid == DEFAULT_PGID
+        data_owner_doesnt_match = (data_dir_uid != ARCHIVEBOX_USER and data_dir_gid != ARCHIVEBOX_GROUP) and not IS_ROOT
+        data_not_writable = not (os.access(DATA_DIR, os.W_OK) and os.access(CONSTANTS.LIB_DIR, os.W_OK) and os.access(CONSTANTS.TMP_DIR, os.W_OK))
+        if data_owned_by_root:
+            prnt('[yellow]:warning: Warning: ArchiveBox [blue]DATA_DIR[/blue] is currently owned by [red]root[/red], ArchiveBox will refuse to run![/yellow]')
+        elif data_owner_doesnt_match or data_not_writable:
+            prnt(f'[yellow]:warning: Warning: ArchiveBox [blue]DATA_DIR[/blue] is currently owned by [red]{data_dir_uid}:{data_dir_gid}[/red], but ArchiveBox user is [blue]{ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}[/blue] ({USER})! (ArchiveBox may not be able to write to the data dir)[/yellow]')
+            
+        if data_owned_by_root or data_owner_doesnt_match or data_not_writable:
+            prnt(f'[violet]Hint:[/violet] If you encounter permissions errors, change [red]{data_dir_uid}[/red]:{data_dir_gid} (PUID:PGID) to match the user that will run ArchiveBox, e.g.:')
+            prnt(f'    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {DATA_DIR.resolve()}')
+            prnt(f'    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {CONSTANTS.LIB_DIR.resolve()}')
+            prnt(f'    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {CONSTANTS.TMP_DIR.resolve()}')
+            prnt()
+            prnt('[blue]More info:[/blue]')
+            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox#storage-requirements]https://github.com/ArchiveBox/ArchiveBox#storage-requirements[/link]')
+            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview#permissions]https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview#permissions[/link]')
+            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#puid--pgid]https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#puid--pgid[/link]')
+            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Troubleshooting#filesystem-doesnt-support-fsync-eg-network-mounts]https://github.com/ArchiveBox/ArchiveBox/wiki/Troubleshooting#filesystem-doesnt-support-fsync-eg-network-mounts[/link]')
     else:
         prnt()
         prnt('[red][i] Data locations:[/red] (not in a data directory)')
-
+        
     prnt()
+    
 
+    if failures:
+        raise SystemExit(1)
+    else:
+        raise SystemExit(0)
 
 @enforce_types
 def run(subcommand: str,
@@ -289,11 +330,11 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
     out_dir.mkdir(exist_ok=True)
     is_empty = not len(set(os.listdir(out_dir)) - CONSTANTS.ALLOWED_IN_DATA_DIR)
 
-    if (out_dir / CONSTANTS.JSON_INDEX_FILENAME).exists():
+    if os.access(out_dir / CONSTANTS.JSON_INDEX_FILENAME, os.F_OK):
         print("[red]:warning: This folder contains a JSON index. It is deprecated, and will no longer be kept up to date automatically.[/red]", file=sys.stderr)
         print("[red]    You can run `archivebox list --json --with-headers > static_index.json` to manually generate it.[/red]", file=sys.stderr)
 
-    existing_index = CONSTANTS.DATABASE_FILE.exists()
+    existing_index = os.access(CONSTANTS.DATABASE_FILE, os.F_OK)
 
     if is_empty and not existing_index:
         print(f'[turquoise4][+] Initializing a new ArchiveBox v{VERSION} collection...[/turquoise4]')
@@ -329,7 +370,7 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
     print(f'    + ./{CONSTANTS.CONFIG_FILE.relative_to(DATA_DIR)}...')
     write_config_file({}, out_dir=str(out_dir))
 
-    if CONSTANTS.DATABASE_FILE.exists():
+    if os.access(CONSTANTS.DATABASE_FILE, os.F_OK):
         print('\n[green][*] Verifying main SQL index and running any migrations needed...[/green]')
     else:
         print('\n[green][+] Building main SQL index and running initial migrations...[/green]')
@@ -337,7 +378,7 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
     for migration_line in apply_migrations(out_dir):
         sys.stdout.write(f'    {migration_line}\n')
 
-    assert CONSTANTS.DATABASE_FILE.exists()
+    assert os.access(CONSTANTS.DATABASE_FILE, os.R_OK)
     print()
     print(f'    √ ./{CONSTANTS.DATABASE_FILE.relative_to(DATA_DIR)}')
     
@@ -427,9 +468,9 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
     json_index = out_dir / CONSTANTS.JSON_INDEX_FILENAME
     html_index = out_dir / CONSTANTS.HTML_INDEX_FILENAME
     index_name = f"{date.today()}_index_old"
-    if json_index.exists():
+    if os.access(json_index, os.F_OK):
         json_index.rename(f"{index_name}.json")
-    if html_index.exists():
+    if os.access(html_index, os.F_OK):
         html_index.rename(f"{index_name}.html")
 
     if install:
@@ -948,23 +989,56 @@ def list_folders(links: List[Link],
 @enforce_types
 def install(out_dir: Path=DATA_DIR) -> None:
     """Automatically install all ArchiveBox dependencies and extras"""
+    
+    # if running as root:
+    #    - run init to create index + lib dir
+    #    - chown -R 911 DATA_DIR
+    #    - install all binaries as root
+    #    - chown -R 911 LIB_DIR
+    # else:
+    #    - run init to create index + lib dir as current user
+    #    - install all binaries as current user
+    #    - recommend user re-run with sudo if any deps need to be installed as root
 
     from rich import print
     from django.conf import settings
+    
+    from archivebox import CONSTANTS
+    from archivebox.config.permissions import IS_ROOT, ARCHIVEBOX_USER, ARCHIVEBOX_GROUP
 
-    if not ARCHIVE_DIR.exists():
-        run_subcommand('init', stdin=None, pwd=out_dir)
+    if not (os.access(ARCHIVE_DIR, os.R_OK) and ARCHIVE_DIR.is_dir()):
+        run_subcommand('init', stdin=None, pwd=out_dir)  # must init full index because we need a db to store InstalledBinary entries in
 
-    stderr('\n[+] Installing ArchiveBox dependencies automatically...', color='green')
-
+    print('\n[green][+] Installing ArchiveBox dependencies automatically...[/green]')
+    
+    # we never want the data dir to be owned by root, detect owner of existing owner of DATA_DIR to try and guess desired non-root UID
+    if IS_ROOT:
+        # if we have sudo/root permissions, take advantage of them just while installing dependencies
+        print()
+        print('[yellow]:warning:  Using [red]root[/red] privileges only to install dependencies that need it, all other operations should be done as a [blue]non-root[/blue] user.[/yellow]')
+        print(f'    DATA_DIR, LIB_DIR, and TMP_DIR will be owned by [blue]{ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}[/blue].')
+        print()
+        
     for binary in reversed(list(settings.BINARIES.values())):
         providers = ' [grey53]or[/grey53] '.join(provider.name for provider in binary.binproviders_supported)
         print(f'[+] Locating / Installing [yellow]{binary.name}[/yellow] using [red]{providers}[/red]...')
         try:
             print(binary.load_or_install(fresh=True).model_dump(exclude={'provider_overrides', 'bin_dir', 'hook_type'}))
+            if IS_ROOT:
+                with SudoPermission(uid=0):
+                    os.system(f'chown -R {ARCHIVEBOX_USER} "{CONSTANTS.LIB_DIR.resolve()}"')
         except Exception as e:
-            print(f'[X] Failed to install {binary.name}: {e}')
-
+            if IS_ROOT:
+                print(f'[yellow]:warning:  Retrying {binary.name} installation with [red]sudo[/red]...[/yellow]')
+                with SudoPermission(uid=0):
+                    try:
+                        print(binary.load_or_install(fresh=True).model_dump(exclude={'provider_overrides', 'bin_dir', 'hook_type'}))
+                        os.system(f'chown -R {ARCHIVEBOX_USER} "{CONSTANTS.LIB_DIR.resolve()}"')
+                    except Exception as e:
+                        print(f'[red]:cross_mark: Failed to install {binary.name} as root: {e}[/red]')
+            else:
+                print(f'[red]:cross_mark: Failed to install {binary.name} as user {ARCHIVEBOX_USER}: {e}[/red]')
+                
 
     from django.contrib.auth import get_user_model
     User = get_user_model()
@@ -974,11 +1048,13 @@ def install(out_dir: Path=DATA_DIR) -> None:
         stderr('    archivebox manage createsuperuser')
         # run_subcommand('manage', subcommand_args=['createsuperuser'], pwd=out_dir)
     
-    stderr('\n[√] Set up ArchiveBox and its dependencies successfully.', color='green')
+    print('\n[green][√] Set up ArchiveBox and its dependencies successfully.[/green]\n', file=sys.stderr)
     
     from plugins_pkg.pip.apps import ARCHIVEBOX_BINARY
     
-    run_shell([ARCHIVEBOX_BINARY.load().abspath, 'version'], capture_output=False, cwd=out_dir)
+    proc = run_shell([ARCHIVEBOX_BINARY.load().abspath, 'version'], capture_output=False, cwd=out_dir)
+    raise SystemExit(proc.returncode)
+
 
 # backwards-compatibility:
 setup = install
@@ -1100,6 +1176,7 @@ def schedule(add: bool=False,
     
     check_data_folder()
     from archivebox.plugins_pkg.pip.apps import ARCHIVEBOX_BINARY
+    from archivebox.config.permissions import USER
 
     Path(CONSTANTS.LOGS_DIR).mkdir(exist_ok=True)
 
@@ -1156,7 +1233,7 @@ def schedule(add: bool=False,
         existing_jobs = list(cron.find_comment(CRON_COMMENT))
 
         print()
-        print('{green}[√] Scheduled new ArchiveBox cron job for user: {} ({} jobs are active).{reset}'.format(SHELL_CONFIG.USER, len(existing_jobs), **SHELL_CONFIG.ANSI))
+        print('{green}[√] Scheduled new ArchiveBox cron job for user: {} ({} jobs are active).{reset}'.format(USER, len(existing_jobs), **SHELL_CONFIG.ANSI))
         print('\n'.join(f'  > {cmd}' if str(cmd) == str(new_job) else f'    {cmd}' for cmd in existing_jobs))
         if total_runs > 60 and not quiet:
             stderr()
@@ -1170,7 +1247,7 @@ def schedule(add: bool=False,
         if existing_jobs:
             print('\n'.join(str(cmd) for cmd in existing_jobs))
         else:
-            stderr('{red}[X] There are no ArchiveBox cron jobs scheduled for your user ({}).{reset}'.format(SHELL_CONFIG.USER, **SHELL_CONFIG.ANSI))
+            stderr('{red}[X] There are no ArchiveBox cron jobs scheduled for your user ({}).{reset}'.format(USER, **SHELL_CONFIG.ANSI))
             stderr('    To schedule a new job, run:')
             stderr('        archivebox schedule --every=[timeperiod] --depth=1 https://example.com/some/rss/feed.xml')
         raise SystemExit(0)
@@ -1294,7 +1371,7 @@ def manage(args: Optional[List[str]]=None, out_dir: Path=DATA_DIR) -> None:
     check_data_folder()
     from django.core.management import execute_from_command_line
 
-    if (args and "createsuperuser" in args) and (SHELL_CONFIG.IN_DOCKER and not SHELL_CONFIG.IS_TTY):
+    if (args and "createsuperuser" in args) and (IN_DOCKER and not SHELL_CONFIG.IS_TTY):
         stderr('[!] Warning: you need to pass -it to use interactive commands in docker', color='lightyellow')
         stderr('    docker run -it archivebox manage {}'.format(' '.join(args or ['...'])), color='lightyellow')
         stderr('')

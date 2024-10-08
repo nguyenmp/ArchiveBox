@@ -22,41 +22,34 @@ Documentation:
 __package__ = 'archivebox.config'
 
 import os
-import io
 import re
 import sys
 import json
 import shutil
 
-from hashlib import md5
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, Type, Tuple, Dict
-from subprocess import run, PIPE, DEVNULL, STDOUT, TimeoutExpired
+from typing import Optional, Type, Tuple, Dict, Any
+from subprocess import run, DEVNULL
 from configparser import ConfigParser
 
 from rich.progress import Progress
 from rich.console import Console
 from benedict import benedict
-from pydantic_pkgr import SemVer
 
 import django
 from django.db.backends.sqlite3.base import Database as sqlite3
 
 
-from .constants import CONSTANTS, TIMEZONE
+from .constants import CONSTANTS
 from .constants import *
-from .config_stubs import (
-    ConfigValue,
-    ConfigDefaultValue,
-    ConfigDefaultDict,
-)
+
 from ..misc.logging import (
     stderr,
     hint,      # noqa
 )
 
-from .defaults import SHELL_CONFIG, GENERAL_CONFIG, ARCHIVING_CONFIG, SERVER_CONFIG, SEARCH_BACKEND_CONFIG, STORAGE_CONFIG
+from .common import SHELL_CONFIG, GENERAL_CONFIG, ARCHIVING_CONFIG, SERVER_CONFIG, SEARCH_BACKEND_CONFIG, STORAGE_CONFIG
 from archivebox.plugins_auth.ldap.apps import LDAP_CONFIG
 from archivebox.plugins_extractor.favicon.apps import FAVICON_CONFIG
 from archivebox.plugins_extractor.wget.apps import WGET_CONFIG
@@ -67,7 +60,7 @@ LDAP = LDAP_CONFIG.LDAP_ENABLED
 
 ############################### Config Schema ##################################
 
-CONFIG_SCHEMA: Dict[str, ConfigDefaultDict] = {
+CONFIG_SCHEMA: Dict[str, Dict[str, Any]] = {
     'SHELL_CONFIG': SHELL_CONFIG.as_legacy_config_schema(),
 
     'SERVER_CONFIG': SERVER_CONFIG.as_legacy_config_schema(),
@@ -194,7 +187,7 @@ def get_real_name(key: str) -> str:
 
 # These are derived/computed values calculated *after* all user-provided config values are ingested
 # they appear in `archivebox config` output and are intended to be read-only for the user
-DYNAMIC_CONFIG_SCHEMA: ConfigDefaultDict = {
+DYNAMIC_CONFIG_SCHEMA: Dict[str, Any] = {
     'URL_DENYLIST_PTN':         {'default': lambda c: c['URL_DENYLIST'] and re.compile(c['URL_DENYLIST'] or '', CONSTANTS.ALLOWDENYLIST_REGEX_FLAGS)},
     'URL_ALLOWLIST_PTN':        {'default': lambda c: c['URL_ALLOWLIST'] and re.compile(c['URL_ALLOWLIST'] or '', CONSTANTS.ALLOWDENYLIST_REGEX_FLAGS)},
 
@@ -209,12 +202,12 @@ DYNAMIC_CONFIG_SCHEMA: ConfigDefaultDict = {
 
 
 def load_config_val(key: str,
-                    default: ConfigDefaultValue=None,
+                    default: Any=None,
                     type: Optional[Type]=None,
                     aliases: Optional[Tuple[str, ...]]=None,
                     config: Optional[benedict]=None,
                     env_vars: Optional[os._Environ]=None,
-                    config_file_vars: Optional[Dict[str, str]]=None) -> ConfigValue:
+                    config_file_vars: Optional[Dict[str, str]]=None) -> Any:
     """parse bool, int, and str key=value pairs from env"""
 
     assert isinstance(config, dict)
@@ -277,7 +270,7 @@ def load_config_file(out_dir: str | None=CONSTANTS.DATA_DIR) -> Optional[benedic
     """load the ini-formatted config file from DATA_DIR/Archivebox.conf"""
 
     config_path = CONSTANTS.CONFIG_FILE
-    if config_path.exists():
+    if os.access(config_path, os.R_OK):
         config_file = ConfigParser()
         config_file.optionxform = str
         config_file.read(config_path)
@@ -314,7 +307,7 @@ def write_config_file(config: Dict[str, str], out_dir: str | None=CONSTANTS.DATA
 
     config_path = CONSTANTS.CONFIG_FILE
 
-    if not config_path.exists():
+    if not os.access(config_path, os.F_OK):
         atomic_write(config_path, CONFIG_HEADER)
 
     config_file = ConfigParser()
@@ -362,7 +355,7 @@ def write_config_file(config: Dict[str, str], out_dir: str | None=CONSTANTS.DATA
 
         raise
 
-    if Path(f'{config_path}.bak').exists():
+    if os.access(f'{config_path}.bak', os.F_OK):
         os.remove(f'{config_path}.bak')
 
     return benedict({
@@ -372,7 +365,7 @@ def write_config_file(config: Dict[str, str], out_dir: str | None=CONSTANTS.DATA
 
 
 
-def load_config(defaults: ConfigDefaultDict,
+def load_config(defaults: Dict[str, Any],
                 config: Optional[benedict]=None,
                 out_dir: Optional[str]=None,
                 env_vars: Optional[os._Environ]=None,
@@ -469,7 +462,7 @@ def find_chrome_data_dir() -> Optional[str]:
     # )
     # for path in default_profile_paths:
     #     full_path = Path(path).resolve()
-    #     if full_path.exists():
+    #     if full_path.is_dir():
     #         return full_path
     return None
 
@@ -505,7 +498,7 @@ def load_all_config():
 # add all final config values in CONFIG to globals in this file
 CONFIG: benedict = load_all_config()
 globals().update(CONFIG)
-# this lets us do:  from .config import DEBUG, MEDIA_TIMEOUT, ...
+
 
 # print("FINISHED LOADING CONFIG USING SCHEMAS + FILE + ENV")
 
@@ -521,8 +514,8 @@ globals().update(CONFIG)
 
 
 # Set timezone to UTC and umask to OUTPUT_PERMISSIONS
-assert TIMEZONE == 'UTC', f'The server timezone should always be set to UTC (got {TIMEZONE})'  # noqa: F821
-os.environ["TZ"] = TIMEZONE                                                  # noqa: F821
+assert CONSTANTS.TIMEZONE == 'UTC', f'The server timezone should always be set to UTC (got {CONSTANTS.TIMEZONE})'  # noqa: F821
+os.environ["TZ"] = CONSTANTS.TIMEZONE                                                  # noqa: F821
 os.umask(0o777 - int(STORAGE_CONFIG.DIR_OUTPUT_PERMISSIONS, base=8))                        # noqa: F821
 
 ########################### Config Validity Checkers ###########################
@@ -533,7 +526,8 @@ if not SHELL_CONFIG.SHOW_PROGRESS:
     os.environ['TERM'] = 'dumb'
 
 # recreate rich console obj based on new config values
-CONSOLE = Console()
+STDOUT = CONSOLE = Console()
+STDERR = Console(stderr=True)
 from ..misc import logging
 logging.CONSOLE = CONSOLE
 
@@ -541,11 +535,11 @@ logging.CONSOLE = CONSOLE
 INITIAL_STARTUP_PROGRESS = None
 INITIAL_STARTUP_PROGRESS_TASK = 0
 
-def bump_startup_progress_bar():
+def bump_startup_progress_bar(advance=1):
     global INITIAL_STARTUP_PROGRESS
     global INITIAL_STARTUP_PROGRESS_TASK
     if INITIAL_STARTUP_PROGRESS:
-        INITIAL_STARTUP_PROGRESS.update(INITIAL_STARTUP_PROGRESS_TASK, advance=1)   # type: ignore
+        INITIAL_STARTUP_PROGRESS.update(INITIAL_STARTUP_PROGRESS_TASK, advance=advance)   # type: ignore
 
 
 def setup_django_minimal():
@@ -559,6 +553,8 @@ DJANGO_SET_UP = False
 
 
 def setup_django(out_dir: Path | None=None, check_db=False, config: benedict=CONFIG, in_memory_db=False) -> None:
+    from rich.panel import Panel
+    
     global INITIAL_STARTUP_PROGRESS
     global INITIAL_STARTUP_PROGRESS_TASK
     global DJANGO_SET_UP
@@ -568,7 +564,7 @@ def setup_django(out_dir: Path | None=None, check_db=False, config: benedict=CON
         # TODO: figure out why CLI entrypoints with init_pending are running this twice sometimes
         return
 
-    with Progress(transient=True, expand=True, console=CONSOLE) as INITIAL_STARTUP_PROGRESS:
+    with Progress(transient=True, expand=True, console=STDERR) as INITIAL_STARTUP_PROGRESS:
         INITIAL_STARTUP_PROGRESS_TASK = INITIAL_STARTUP_PROGRESS.add_task("[green]Loading modules...", total=25)
 
         output_dir = out_dir or CONSTANTS.DATA_DIR
@@ -595,7 +591,14 @@ def setup_django(out_dir: Path | None=None, check_db=False, config: benedict=CON
             else:
                 # Otherwise use default sqlite3 file-based database and initialize django
                 # without running migrations automatically (user runs them manually by calling init)
-                django.setup()
+                try:
+                    django.setup()
+                except Exception as e:
+                    bump_startup_progress_bar(advance=1000)
+                    STDERR.print()
+                    STDERR.print(Panel(f'\n[red]{e.__class__.__name__}[/red]: [yellow]{e}[/yellow]\nPlease check your config and [blue]DATA_DIR[/blue] permissions.\n', title='\n\n[red][X] Error while trying to load database!', subtitle='[grey53]NO WRITES CAN BE PERFORMED[/grey53]', expand=False, style='bold red'))
+                    STDERR.print()
+                    return
             
             bump_startup_progress_bar()
 
@@ -608,6 +611,17 @@ def setup_django(out_dir: Path | None=None, check_db=False, config: benedict=CON
                 f.write(f"\n> {command}; TS={ts} VERSION={CONSTANTS.VERSION} IN_DOCKER={SHELL_CONFIG.IN_DOCKER} IS_TTY={SHELL_CONFIG.IS_TTY}\n")
 
             if check_db:
+                # make sure the data dir is owned by a non-root user
+                if CONSTANTS.DATA_DIR.stat().st_uid == 0:
+                    STDERR.print('[red][X] Error: ArchiveBox DATA_DIR cannot be owned by root![/red]')
+                    STDERR.print(f'    {CONSTANTS.DATA_DIR}')
+                    STDERR.print()
+                    STDERR.print('[violet]Hint:[/violet] Are you running archivebox in the right folder? (and as a non-root user?)')
+                    STDERR.print('    cd path/to/your/archive/data')
+                    STDERR.print('    archivebox [command]')
+                    STDERR.print()
+                    raise SystemExit(9)
+                
                 # Create cache table in DB if needed
                 try:
                     from django.core.cache import cache
@@ -625,7 +639,7 @@ def setup_django(out_dir: Path | None=None, check_db=False, config: benedict=CON
                     conn.close_if_unusable_or_obsolete()
 
                 sql_index_path = CONSTANTS.DATABASE_FILE
-                assert sql_index_path.exists(), (
+                assert os.access(sql_index_path, os.F_OK), (
                     f'No database file {sql_index_path} found in: {CONSTANTS.DATA_DIR} (Are you in an ArchiveBox collection directory?)')
 
                 bump_startup_progress_bar()

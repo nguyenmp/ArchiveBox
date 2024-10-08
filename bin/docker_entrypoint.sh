@@ -110,12 +110,11 @@ if [[ -d "$PLAYWRIGHT_BROWSERS_PATH/.links" ]]; then
     chown -h $PUID:$PGID "$PLAYWRIGHT_BROWSERS_PATH"/.links/*
 fi
 
-# also chown tmp dir
-mkdir -p /tmp/archivebox
-chmod 777 /tmp
-chown $PUID:$PGID /tmp/archivebox
-mkdir -p /app/lib
-chown $PUID:$PGID /app/lib /app/lib/*
+# also chown tmp dir and lib dir
+mkdir -p "$SYSTEM_TMP_DIR"
+chown $PUID:$PGID "$SYSTEM_TMP_DIR"
+mkdir -p "$SYSTEM_LIB_DIR"
+chown $PUID:$PGID "$SYSTEM_LIB_DIR" "$SYSTEM_LIB_DIR"/*
 
 # (this check is written in blood in 2023, QEMU silently breaks things in ways that are not obvious)
 export IN_QEMU="$(pmap 1 | grep qemu >/dev/null && echo 'True' || echo 'False')"
@@ -188,6 +187,7 @@ if ! test -L /var/spool/cron/crontabs; then
     rm -Rf /var/spool/cron/crontabs
     ln -sf "$DATA_DIR/crontabs" /var/spool/cron/crontabs
 fi
+chown -R $PUID "$DATA_DIR/crontabs"
 
 # set DBUS_SYSTEM_BUS_ADDRESS & DBUS_SESSION_BUS_ADDRESS
 # (dbus is not actually needed, it makes chrome log fewer warnings but isn't worth making our docker images bigger)
