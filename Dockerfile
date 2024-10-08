@@ -273,6 +273,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Install oauth2 plugin for yt-dlp to work around https://github.com/yt-dlp/yt-dlp/issues/10128 [youtube] Sign in to confirm you’re not a bot. This helps protect our community #10128 
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    echo "[*] Installing yt-dlp-youtube-oauth2 plugin for yt-dlp" \
+    && pip install https://github.com/coletdjnz/yt-dlp-youtube-oauth2/archive/refs/heads/master.zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pydantic_pkgr to work around unknown build issues
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    echo "[*] Installing pydantic_pkgr" \
+    && pip install pydantic_pkgr pocket \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install ArchiveBox Python package from source
 COPY --chown=root:root --chmod=755 "." "$CODE_DIR/"
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
