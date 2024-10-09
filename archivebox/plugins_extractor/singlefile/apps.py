@@ -31,7 +31,7 @@ class SinglefileConfig(BaseConfigSet):
     SINGLEFILE_COOKIES_FILE: Optional[Path] = Field(default=lambda: ARCHIVING_CONFIG.COOKIES_FILE)
 
     SINGLEFILE_BINARY: str = Field(default='single-file')
-    SINGLEFILE_EXTRA_ARGS: List[str] = []
+    SINGLEFILE_EXTRA_ARGS: List[str] = ['--max-parallel-workers=1']
 
 
 SINGLEFILE_CONFIG = SinglefileConfig()
