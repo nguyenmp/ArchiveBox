@@ -37,6 +37,17 @@ class YtdlpConfig(BaseConfigSet):
         '--geo-bypass',
         '--add-metadata',
         '--format=(bv*+ba/b)[filesize<={}][filesize_approx<=?{}]/(bv*+ba/b)'.format(ARCHIVING_CONFIG.MEDIA_MAX_SIZE, ARCHIVING_CONFIG.MEDIA_MAX_SIZE),
+
+    ] + [
+        # Specific cucstom arguments for me
+        '--write-description',
+        '--write-info-json',
+        '--skip-download',
+        '--cache-dir=/data/yt-dlp-cache/'
+        '--username=oauth2',
+        '--password=',
+        '--proxy=socks5://tor-socks-proxy:9150',
+        '--no-playlist',
     ], alias='YOUTUBEDL_EXTRA_ARGS')
     
     YTDLP_CHECK_SSL_VALIDITY: bool = Field(default=lambda: ARCHIVING_CONFIG.CHECK_SSL_VALIDITY)
