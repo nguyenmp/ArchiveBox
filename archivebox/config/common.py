@@ -1,9 +1,9 @@
 __package__ = 'archivebox.config'
 
+import re
 import sys
 import shutil
-
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from pathlib import Path
 
 from rich import print
@@ -11,7 +11,6 @@ from pydantic import Field, field_validator, computed_field
 from django.utils.crypto import get_random_string
 
 from abx.archivebox.base_configset import BaseConfigSet
-
 
 from .constants import CONSTANTS
 from .version import get_COMMIT_HASH, get_BUILD_TIME
@@ -35,7 +34,6 @@ class ShellConfig(BaseConfigSet):
     VERSIONS_AVAILABLE: bool = False             # .check_for_update.get_versions_available_on_github(c)},
     CAN_UPGRADE: bool = False                    # .check_for_update.can_upgrade(c)},
 
-    
     @computed_field
     @property
     def TERM_WIDTH(self) -> int:
@@ -57,6 +55,16 @@ SHELL_CONFIG = ShellConfig()
 
 
 class StorageConfig(BaseConfigSet):
+    # TMP_DIR must be a local, fast, readable/writable dir by archivebox user,
+    # must be a short path due to unix path length restrictions for socket files (<100 chars)
+    # must be a local SSD/tmpfs for speed and because bind mounts/network mounts/FUSE dont support unix sockets
+    TMP_DIR: Path                       = Field(default=CONSTANTS.DEFAULT_TMP_DIR)
+    
+    # LIB_DIR must be a local, fast, readable/writable dir by archivebox user,
+    # must be able to contain executable binaries (up to 5GB size)
+    # should not be a remote/network/FUSE mount for speed reasons, otherwise extractors will be slow
+    LIB_DIR: Path                       = Field(default=CONSTANTS.DEFAULT_LIB_DIR)
+    
     OUTPUT_PERMISSIONS: str             = Field(default='644')
     RESTRICT_FILE_NAMES: str            = Field(default='windows')
     ENFORCE_ATOMIC_WRITES: bool         = Field(default=True)
@@ -100,19 +108,22 @@ SERVER_CONFIG = ServerConfig()
 
 
 class ArchivingConfig(BaseConfigSet):
-    ONLY_NEW: bool                      = Field(default=True)
+    ONLY_NEW: bool                        = Field(default=True)
     
-    TIMEOUT: int                        = Field(default=60)
-    MEDIA_TIMEOUT: int                  = Field(default=3600)
+    TIMEOUT: int                          = Field(default=60)
+    MEDIA_TIMEOUT: int                    = Field(default=3600)
 
-    MEDIA_MAX_SIZE: str                 = Field(default='750m')
-    RESOLUTION: str                     = Field(default='1440,2000')
-    CHECK_SSL_VALIDITY: bool            = Field(default=True)
-    USER_AGENT: str                     = Field(default='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 ArchiveBox/{VERSION} (+https://github.com/ArchiveBox/ArchiveBox/)')
-    COOKIES_FILE: Path | None           = Field(default=None)
+    MEDIA_MAX_SIZE: str                   = Field(default='750m')
+    RESOLUTION: str                       = Field(default='1440,2000')
+    CHECK_SSL_VALIDITY: bool              = Field(default=True)
+    USER_AGENT: str                       = Field(default='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 ArchiveBox/{VERSION} (+https://github.com/ArchiveBox/ArchiveBox/)')
+    COOKIES_FILE: Path | None             = Field(default=None)
     
-    URL_DENYLIST: str                   = Field(default=r'\.(css|js|otf|ttf|woff|woff2|gstatic\.com|googleapis\.com/css)(\?.*)?$', alias='URL_BLACKLIST')
-    URL_ALLOWLIST: str | None           = Field(default=None, alias='URL_WHITELIST')
+    URL_DENYLIST: str                     = Field(default=r'\.(css|js|otf|ttf|woff|woff2|gstatic\.com|googleapis\.com/css)(\?.*)?$', alias='URL_BLACKLIST')
+    URL_ALLOWLIST: str | None             = Field(default=None, alias='URL_WHITELIST')
+    
+    SAVE_ALLOWLIST: Dict[str, List[str]]  = Field(default={})  # mapping of regex patterns to list of archive methods
+    SAVE_DENYLIST: Dict[str, List[str]]   = Field(default={})
     
     # GIT_DOMAINS: str                    = Field(default='github.com,bitbucket.org,gitlab.com,gist.github.com,codeberg.org,gitea.com,git.sr.ht')
     # WGET_USER_AGENT: str                = Field(default=lambda c: c['USER_AGENT'] + ' wget/{WGET_VERSION}')
@@ -144,6 +155,28 @@ class ArchivingConfig(BaseConfigSet):
             requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return v
+    
+    @property
+    def URL_ALLOWLIST_PTN(self) -> re.Pattern | None:
+        return re.compile(self.URL_ALLOWLIST, CONSTANTS.ALLOWDENYLIST_REGEX_FLAGS) if self.URL_ALLOWLIST else None
+    
+    @property
+    def URL_DENYLIST_PTN(self) -> re.Pattern:
+        return re.compile(self.URL_DENYLIST, CONSTANTS.ALLOWDENYLIST_REGEX_FLAGS)
+    
+    @property
+    def SAVE_ALLOWLIST_PTNS(self) -> Dict[re.Pattern, List[str]]:
+        return {
+            re.compile(k, CONSTANTS.ALLOWDENYLIST_REGEX_FLAGS): v
+            for k, v in self.SAVE_ALLOWLIST.items()
+        } if self.SAVE_ALLOWLIST else {}
+    
+    @property
+    def SAVE_DENYLIST_PTNS(self) -> Dict[re.Pattern, List[str]]:
+        return {
+            re.compile(k, CONSTANTS.ALLOWDENYLIST_REGEX_FLAGS): v
+            for k, v in self.SAVE_DENYLIST.items()
+        } if self.SAVE_DENYLIST else {}
 
 ARCHIVING_CONFIG = ArchivingConfig()
 

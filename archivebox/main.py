@@ -14,9 +14,20 @@ from crontab import CronTab, CronSlices
 from django.db.models import QuerySet
 from django.utils import timezone
 
+from archivebox.misc.checks import check_data_folder
+from archivebox.misc.util import enforce_types                         # type: ignore
+from archivebox.misc.system import get_dir_size, dedupe_cron_jobs, CRON_COMMENT
+from archivebox.misc.system import run as run_shell
+from archivebox.misc.logging import stderr, hint
 from archivebox.config import CONSTANTS, VERSION, DATA_DIR, ARCHIVE_DIR
 from archivebox.config.common import SHELL_CONFIG, SEARCH_BACKEND_CONFIG, STORAGE_CONFIG, SERVER_CONFIG, ARCHIVING_CONFIG
 from archivebox.config.permissions import SudoPermission, IN_DOCKER
+from archivebox.config.configfile import (
+    write_config_file,
+    load_all_config,
+    get_real_name,
+)
+
 from .cli import (
     CLI_SUBCOMMANDS,
     run_subcommand,
@@ -30,9 +41,6 @@ from .parsers import (
     save_file_as_source,
     parse_links_memory,
 )
-from archivebox.misc.util import enforce_types                         # type: ignore
-from archivebox.misc.system import get_dir_size, dedupe_cron_jobs, CRON_COMMENT
-from archivebox.misc.system import run as run_shell
 from .index.schema import Link
 from .index import (
     load_main_index,
@@ -66,13 +74,6 @@ from .index.sql import (
 from .index.html import generate_index_from_links
 from .index.csv import links_to_csv
 from .extractors import archive_links, archive_link, ignore_methods
-from archivebox.misc.logging import stderr, hint
-from archivebox.misc.checks import check_data_folder
-from archivebox.config.legacy import (
-    write_config_file,
-    load_all_config,
-    get_real_name,
-)
 from .logging_util import (
     TimedProgress,
     log_importing_started,
@@ -179,21 +180,31 @@ def help(out_dir: Path=DATA_DIR) -> None:
 
 @enforce_types
 def version(quiet: bool=False,
-            out_dir: Path=DATA_DIR) -> None:
+            out_dir: Path=DATA_DIR,
+            binproviders: Optional[List[str]]=None,
+            binaries: Optional[List[str]]=None,
+            ) -> None:
     """Print the ArchiveBox version and dependency information"""
     
     print(VERSION)
     if quiet or '--version' in sys.argv:
         return
     
+    from rich.panel import Panel
     from rich.console import Console
     console = Console()
     prnt = console.print
     
-    from plugins_auth.ldap.apps import LDAP_CONFIG
     from django.conf import settings
+    
+    from abx.archivebox.base_binary import BaseBinary, apt, brew, env
+    
     from archivebox.config.version import get_COMMIT_HASH, get_BUILD_TIME
     from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, RUNNING_AS_UID, RUNNING_AS_GID
+    from archivebox.config.paths import get_data_locations, get_code_locations
+    
+    from plugins_auth.ldap.config import LDAP_CONFIG
+
 
     # 0.7.1
     # ArchiveBox v0.7.1+editable COMMIT_HASH=951bba5 BUILD_TIME=2023-12-17 16:46:05 1702860365
@@ -214,13 +225,13 @@ def version(quiet: bool=False,
         f'ARCH={p.machine}',
         f'OS={p.system}',
         f'PLATFORM={platform.platform()}',
-        f'PYTHON={sys.implementation.name.title()}',
+        f'PYTHON={sys.implementation.name.title()}' + (' (venv)' if CONSTANTS.IS_INSIDE_VENV else ''),
     )
-    OUTPUT_IS_REMOTE_FS = CONSTANTS.DATA_LOCATIONS.DATA_DIR.is_mount or CONSTANTS.DATA_LOCATIONS.ARCHIVE_DIR.is_mount
+    OUTPUT_IS_REMOTE_FS = get_data_locations().DATA_DIR.is_mount or get_data_locations().ARCHIVE_DIR.is_mount
     DATA_DIR_STAT = CONSTANTS.DATA_DIR.stat()
     prnt(
-        f'EUID={os.geteuid()} UID={RUNNING_AS_UID} PUID={ARCHIVEBOX_USER} FS_UID={DATA_DIR_STAT.st_uid}',
-        f'EGID={os.getegid()} GID={RUNNING_AS_GID} PGID={ARCHIVEBOX_GROUP} FS_GID={DATA_DIR_STAT.st_gid}',
+        f'EUID={os.geteuid()}:{os.getegid()} UID={RUNNING_AS_UID}:{RUNNING_AS_GID} PUID={ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}',
+        f'FS_UID={DATA_DIR_STAT.st_uid}:{DATA_DIR_STAT.st_gid}',
         f'FS_PERMS={STORAGE_CONFIG.OUTPUT_PERMISSIONS}',
         f'FS_ATOMIC={STORAGE_CONFIG.ENFORCE_ATOMIC_WRITES}',
         f'FS_REMOTE={OUTPUT_IS_REMOTE_FS}',
@@ -228,17 +239,41 @@ def version(quiet: bool=False,
     prnt(
         f'DEBUG={SHELL_CONFIG.DEBUG}',
         f'IS_TTY={SHELL_CONFIG.IS_TTY}',
-        f'TZ={CONSTANTS.TIMEZONE}',
+        f'SUDO={CONSTANTS.IS_ROOT}',
+        f'ID={CONSTANTS.MACHINE_ID}:{CONSTANTS.COLLECTION_ID}',
         f'SEARCH_BACKEND={SEARCH_BACKEND_CONFIG.SEARCH_BACKEND_ENGINE}',
         f'LDAP={LDAP_CONFIG.LDAP_ENABLED}',
         #f'DB=django.db.backends.sqlite3 (({CONFIG["SQLITE_JOURNAL_MODE"]})',  # add this if we have more useful info to show eventually
     )
     prnt()
+    
+    if not (os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) and os.access(CONSTANTS.CONFIG_FILE, os.R_OK)):
+        PANEL_TEXT = '\n'.join((
+            # '',
+            # f'[yellow]CURRENT DIR =[/yellow] [red]{os.getcwd()}[/red]',
+            '',
+            '[violet]Hint:[/violet] [green]cd[/green] into a collection [blue]DATA_DIR[/blue] and run [green]archivebox version[/green] again...',
+            '      [grey53]OR[/grey53] run [green]archivebox init[/green] to create a new collection in the current dir.',
+            '',
+            '      [i][grey53](this is [red]REQUIRED[/red] if you are opening a Github Issue to get help)[/grey53][/i]',
+            '',
+        ))
+        prnt(Panel(PANEL_TEXT, expand=False, border_style='grey53', title='[red]:exclamation: No collection [blue]DATA_DIR[/blue] is currently active[/red]', subtitle='Full version info is only available when inside a collection [light_slate_blue]DATA DIR[/light_slate_blue]'))
+        prnt()
+        return
 
-    prnt('[pale_green1][i] Dependency versions:[/pale_green1]')
+    prnt('[pale_green1][i] Binary Dependencies:[/pale_green1]')
     failures = []
-    for name, binary in reversed(list(settings.BINARIES.items())):
+    for name, binary in list(settings.BINARIES.items()):
         if binary.name == 'archivebox':
+            continue
+        
+        # skip if the binary is not in the requested list of binaries
+        if binaries and binary.name not in binaries:
+            continue
+        
+        # skip if the binary is not supported by any of the requested binproviders
+        if binproviders and binary.binproviders_supported and not any(provider.name in binproviders for provider in binary.binproviders_supported):
             continue
         
         err = None
@@ -247,7 +282,7 @@ def version(quiet: bool=False,
         except Exception as e:
             err = e
             loaded_bin = binary
-        provider_summary = f'[dark_sea_green3]{loaded_bin.binprovider.name.ljust(10)}[/dark_sea_green3]' if loaded_bin.binprovider else '[grey23]not found[/grey23]'
+        provider_summary = f'[dark_sea_green3]{loaded_bin.binprovider.name.ljust(10)}[/dark_sea_green3]' if loaded_bin.binprovider else '[grey23]not found[/grey23] '
         if loaded_bin.abspath:
             abspath = str(loaded_bin.abspath).replace(str(DATA_DIR), '[light_slate_blue].[/light_slate_blue]').replace(str(Path('~').expanduser()), '~')
             if ' ' in abspath:
@@ -257,54 +292,55 @@ def version(quiet: bool=False,
         prnt('', '[green]√[/green]' if loaded_bin.is_valid else '[red]X[/red]', '', loaded_bin.name.ljust(21), str(loaded_bin.version).ljust(12), provider_summary, abspath, overflow='ignore', crop=False)
         if not loaded_bin.is_valid:
             failures.append(loaded_bin.name)
-
-    prnt()
-    prnt('[deep_sky_blue3][i] Source-code locations:[/deep_sky_blue3]')
-    for name, path in CONSTANTS.CODE_LOCATIONS.items():
-        prnt(printable_folder_status(name, path), overflow='ignore', crop=False)
-
-    prnt()
-    if os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) or os.access(CONSTANTS.CONFIG_FILE, os.R_OK):
-        prnt('[bright_yellow][i] Data locations:[/bright_yellow]')
-        for name, path in CONSTANTS.DATA_LOCATIONS.items():
-            prnt(printable_folder_status(name, path), overflow='ignore', crop=False)
-    
-        from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, DEFAULT_PUID, DEFAULT_PGID, IS_ROOT, USER
-        
-        data_dir_stat = Path(DATA_DIR).stat()
-        data_dir_uid, data_dir_gid = data_dir_stat.st_uid, data_dir_stat.st_gid
-        data_owned_by_root = data_dir_uid == 0
-        
-        # data_owned_by_default_user = data_dir_uid == DEFAULT_PUID or data_dir_gid == DEFAULT_PGID
-        data_owner_doesnt_match = (data_dir_uid != ARCHIVEBOX_USER and data_dir_gid != ARCHIVEBOX_GROUP) and not IS_ROOT
-        data_not_writable = not (os.access(DATA_DIR, os.W_OK) and os.access(CONSTANTS.LIB_DIR, os.W_OK) and os.access(CONSTANTS.TMP_DIR, os.W_OK))
-        if data_owned_by_root:
-            prnt('[yellow]:warning: Warning: ArchiveBox [blue]DATA_DIR[/blue] is currently owned by [red]root[/red], ArchiveBox will refuse to run![/yellow]')
-        elif data_owner_doesnt_match or data_not_writable:
-            prnt(f'[yellow]:warning: Warning: ArchiveBox [blue]DATA_DIR[/blue] is currently owned by [red]{data_dir_uid}:{data_dir_gid}[/red], but ArchiveBox user is [blue]{ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}[/blue] ({USER})! (ArchiveBox may not be able to write to the data dir)[/yellow]')
             
-        if data_owned_by_root or data_owner_doesnt_match or data_not_writable:
-            prnt(f'[violet]Hint:[/violet] If you encounter permissions errors, change [red]{data_dir_uid}[/red]:{data_dir_gid} (PUID:PGID) to match the user that will run ArchiveBox, e.g.:')
-            prnt(f'    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {DATA_DIR.resolve()}')
-            prnt(f'    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {CONSTANTS.LIB_DIR.resolve()}')
-            prnt(f'    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {CONSTANTS.TMP_DIR.resolve()}')
-            prnt()
-            prnt('[blue]More info:[/blue]')
-            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox#storage-requirements]https://github.com/ArchiveBox/ArchiveBox#storage-requirements[/link]')
-            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview#permissions]https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview#permissions[/link]')
-            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#puid--pgid]https://github.com/ArchiveBox/ArchiveBox/wiki/Configuration#puid--pgid[/link]')
-            prnt('    [link=https://github.com/ArchiveBox/ArchiveBox/wiki/Troubleshooting#filesystem-doesnt-support-fsync-eg-network-mounts]https://github.com/ArchiveBox/ArchiveBox/wiki/Troubleshooting#filesystem-doesnt-support-fsync-eg-network-mounts[/link]')
-    else:
+    prnt()
+    prnt('[gold3][i] Package Managers:[/gold3]')
+    for name, binprovider in list(settings.BINPROVIDERS.items()):
+        err = None
+        
+        if binproviders and binprovider.name not in binproviders:
+            continue
+        
+        # TODO: implement a BinProvider.BINARY() method that gets the loaded binary for a binprovider's INSTALLER_BIN
+        loaded_bin = binprovider.INSTALLER_BINARY or BaseBinary(name=binprovider.INSTALLER_BIN, binproviders=[env, apt, brew])
+        
+        abspath = None
+        if loaded_bin.abspath:
+            abspath = str(loaded_bin.abspath).replace(str(DATA_DIR), '.').replace(str(Path('~').expanduser()), '~')
+            if ' ' in abspath:
+                abspath = abspath.replace(' ', r'\ ')
+                
+        PATH = str(binprovider.PATH).replace(str(DATA_DIR), '[light_slate_blue].[/light_slate_blue]').replace(str(Path('~').expanduser()), '~')
+        ownership_summary = f'UID=[blue]{str(binprovider.EUID).ljust(4)}[/blue]'
+        provider_summary = f'[dark_sea_green3]{str(abspath).ljust(52)}[/dark_sea_green3]' if abspath else f'[grey23]{"not available".ljust(52)}[/grey23]'
+        prnt('', '[green]√[/green]' if binprovider.is_valid else '[grey53]-[/grey53]', '', binprovider.name.ljust(11), provider_summary, ownership_summary, f'PATH={PATH}', overflow='ellipsis', soft_wrap=True)
+
+    if not (binaries or binproviders):
+        # dont show source code / data dir info if we just want to get version info for a binary or binprovider
+        
         prnt()
-        prnt('[red][i] Data locations:[/red] (not in a data directory)')
+        prnt('[deep_sky_blue3][i] Code locations:[/deep_sky_blue3]')
+        for name, path in get_code_locations().items():
+            prnt(printable_folder_status(name, path), overflow='ignore', crop=False)
+
+        prnt()
+        if os.access(CONSTANTS.ARCHIVE_DIR, os.R_OK) or os.access(CONSTANTS.CONFIG_FILE, os.R_OK):
+            prnt('[bright_yellow][i] Data locations:[/bright_yellow]')
+            for name, path in get_data_locations().items():
+                prnt(printable_folder_status(name, path), overflow='ignore', crop=False)
+        
+            from archivebox.misc.checks import check_data_dir_permissions
+            
+            check_data_dir_permissions()
+        else:
+            prnt()
+            prnt('[red][i] Data locations:[/red] (not in a data directory)')
         
     prnt()
     
-
     if failures:
         raise SystemExit(1)
-    else:
-        raise SystemExit(0)
+    raise SystemExit(0)
 
 @enforce_types
 def run(subcommand: str,
@@ -326,16 +362,13 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
     
     from core.models import Snapshot
     from rich import print
+    
+    # if os.access(out_dir / CONSTANTS.JSON_INDEX_FILENAME, os.F_OK):
+    #     print("[red]:warning: This folder contains a JSON index. It is deprecated, and will no longer be kept up to date automatically.[/red]", file=sys.stderr)
+    #     print("[red]    You can run `archivebox list --json --with-headers > static_index.json` to manually generate it.[/red]", file=sys.stderr)
 
-    out_dir.mkdir(exist_ok=True)
     is_empty = not len(set(os.listdir(out_dir)) - CONSTANTS.ALLOWED_IN_DATA_DIR)
-
-    if os.access(out_dir / CONSTANTS.JSON_INDEX_FILENAME, os.F_OK):
-        print("[red]:warning: This folder contains a JSON index. It is deprecated, and will no longer be kept up to date automatically.[/red]", file=sys.stderr)
-        print("[red]    You can run `archivebox list --json --with-headers > static_index.json` to manually generate it.[/red]", file=sys.stderr)
-
-    existing_index = os.access(CONSTANTS.DATABASE_FILE, os.F_OK)
-
+    existing_index = os.path.isfile(CONSTANTS.DATABASE_FILE)
     if is_empty and not existing_index:
         print(f'[turquoise4][+] Initializing a new ArchiveBox v{VERSION} collection...[/turquoise4]')
         print('[green]----------------------------------------------------------------------[/green]')
@@ -367,8 +400,16 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
     Path(CONSTANTS.SOURCES_DIR).mkdir(exist_ok=True)
     Path(CONSTANTS.ARCHIVE_DIR).mkdir(exist_ok=True)
     Path(CONSTANTS.LOGS_DIR).mkdir(exist_ok=True)
+    
     print(f'    + ./{CONSTANTS.CONFIG_FILE.relative_to(DATA_DIR)}...')
-    write_config_file({}, out_dir=str(out_dir))
+    
+    # create the .archivebox_id file with a unique ID for this collection
+    from archivebox.config.paths import _get_collection_id
+    _get_collection_id(CONSTANTS.DATA_DIR, force_create=True)
+    
+    # create the ArchiveBox.conf file
+    write_config_file({'SECRET_KEY': SERVER_CONFIG.SECRET_KEY})
+
 
     if os.access(CONSTANTS.DATABASE_FILE, os.F_OK):
         print('\n[green][*] Verifying main SQL index and running any migrations needed...[/green]')
@@ -378,12 +419,12 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
     for migration_line in apply_migrations(out_dir):
         sys.stdout.write(f'    {migration_line}\n')
 
-    assert os.access(CONSTANTS.DATABASE_FILE, os.R_OK)
+    assert os.path.isfile(CONSTANTS.DATABASE_FILE) and os.access(CONSTANTS.DATABASE_FILE, os.R_OK)
     print()
     print(f'    √ ./{CONSTANTS.DATABASE_FILE.relative_to(DATA_DIR)}')
     
     # from django.contrib.auth.models import User
-    # if SHELL_CONFIG.IS_TTY and not User.objects.filter(is_superuser=True).exists():
+    # if SHELL_CONFIG.IS_TTY and not User.objects.filter(is_superuser=True).exclude(username='system').exists():
     #     print('{green}[+] Creating admin user account...{reset}'.format(**SHELL_CONFIG.ANSI))
     #     call_command("createsuperuser", interactive=True)
 
@@ -472,7 +513,15 @@ def init(force: bool=False, quick: bool=False, install: bool=False, out_dir: Pat
         json_index.rename(f"{index_name}.json")
     if os.access(html_index, os.F_OK):
         html_index.rename(f"{index_name}.html")
-
+    
+    CONSTANTS.PERSONAS_DIR.mkdir(parents=True, exist_ok=True)
+    CONSTANTS.DEFAULT_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    CONSTANTS.DEFAULT_LIB_DIR.mkdir(parents=True, exist_ok=True)
+    
+    from archivebox.config.common import STORAGE_CONFIG
+    STORAGE_CONFIG.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    STORAGE_CONFIG.LIB_DIR.mkdir(parents=True, exist_ok=True)
+    
     if install:
         run_subcommand('install', pwd=out_dir)
 
@@ -987,7 +1036,7 @@ def list_folders(links: List[Link],
         raise ValueError('Status not recognized.')
 
 @enforce_types
-def install(out_dir: Path=DATA_DIR) -> None:
+def install(out_dir: Path=DATA_DIR, binproviders: Optional[List[str]]=None, binaries: Optional[List[str]]=None, dry_run: bool=False) -> None:
     """Automatically install all ArchiveBox dependencies and extras"""
     
     # if running as root:
@@ -1005,6 +1054,7 @@ def install(out_dir: Path=DATA_DIR) -> None:
     
     from archivebox import CONSTANTS
     from archivebox.config.permissions import IS_ROOT, ARCHIVEBOX_USER, ARCHIVEBOX_GROUP
+    from archivebox.config.paths import get_or_create_working_lib_dir
 
     if not (os.access(ARCHIVE_DIR, os.R_OK) and ARCHIVE_DIR.is_dir()):
         run_subcommand('init', stdin=None, pwd=out_dir)  # must init full index because we need a db to store InstalledBinary entries in
@@ -1013,46 +1063,109 @@ def install(out_dir: Path=DATA_DIR) -> None:
     
     # we never want the data dir to be owned by root, detect owner of existing owner of DATA_DIR to try and guess desired non-root UID
     if IS_ROOT:
+        EUID = os.geteuid()
+        
         # if we have sudo/root permissions, take advantage of them just while installing dependencies
         print()
-        print('[yellow]:warning:  Using [red]root[/red] privileges only to install dependencies that need it, all other operations should be done as a [blue]non-root[/blue] user.[/yellow]')
+        print(f'[yellow]:warning:  Running as UID=[blue]{EUID}[/blue] with [red]sudo[/red] only for dependencies that need it.[/yellow]')
         print(f'    DATA_DIR, LIB_DIR, and TMP_DIR will be owned by [blue]{ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}[/blue].')
         print()
-        
-    for binary in reversed(list(settings.BINARIES.values())):
-        providers = ' [grey53]or[/grey53] '.join(provider.name for provider in binary.binproviders_supported)
-        print(f'[+] Locating / Installing [yellow]{binary.name}[/yellow] using [red]{providers}[/red]...')
+    
+    LIB_DIR = get_or_create_working_lib_dir()
+    
+    package_manager_names = ', '.join(
+        f'[yellow]{binprovider.name}[/yellow]'
+        for binprovider in reversed(list(settings.BINPROVIDERS.values()))
+        if not binproviders or (binproviders and binprovider.name in binproviders)
+    )
+    print(f'[+] Setting up package managers {package_manager_names}...')
+    for binprovider in reversed(list(settings.BINPROVIDERS.values())):
+        if binproviders and binprovider.name not in binproviders:
+            continue
         try:
-            print(binary.load_or_install(fresh=True).model_dump(exclude={'provider_overrides', 'bin_dir', 'hook_type'}))
-            if IS_ROOT:
+            binprovider.setup()
+        except Exception:
+            # it's ok, installing binaries below will automatically set up package managers as needed
+            # e.g. if user does not have npm available we cannot set it up here yet, but once npm Binary is installed
+            # the next package that depends on npm will automatically call binprovider.setup() during its own install
+            pass
+    
+    print()
+    
+    for binary in reversed(list(settings.BINARIES.values())):
+        if binary.name in ('archivebox', 'django', 'sqlite', 'python'):
+            # obviously must already be installed if we are running
+            continue
+        
+        if binaries and binary.name not in binaries:
+            continue
+        
+        providers = ' [grey53]or[/grey53] '.join(
+            provider.name for provider in binary.binproviders_supported
+            if not binproviders or (binproviders and provider.name in binproviders)
+        )
+        if not providers:
+            continue
+        print(f'[+] Detecting / Installing [yellow]{binary.name.ljust(22)}[/yellow] using [red]{providers}[/red]...')
+        try:
+            with SudoPermission(uid=0, fallback=True):
+                # print(binary.load_or_install(fresh=True).model_dump(exclude={'overrides', 'bin_dir', 'hook_type'}))
+                if binproviders:
+                    providers_supported_by_binary = [provider.name for provider in binary.binproviders_supported]
+                    for binprovider_name in binproviders:
+                        if binprovider_name not in providers_supported_by_binary:
+                            continue
+                        try:
+                            if dry_run:
+                                # always show install commands when doing a dry run
+                                sys.stderr.write("\033[2;49;90m")  # grey53
+                                result = binary.install(binproviders=[binprovider_name], dry_run=dry_run).model_dump(exclude={'overrides', 'bin_dir', 'hook_type'})
+                                sys.stderr.write("\033[00m\n")     # reset
+                            else:
+                                result = binary.load_or_install(binproviders=[binprovider_name], fresh=True, dry_run=dry_run, quiet=False).model_dump(exclude={'overrides', 'bin_dir', 'hook_type'})
+                            if result and result['loaded_version']:
+                                break
+                        except Exception as e:
+                            print(f'[red]:cross_mark: Failed to install {binary.name} as using {binprovider_name} as user {ARCHIVEBOX_USER}: {e}[/red]')
+                else:
+                    if dry_run:
+                        sys.stderr.write("\033[2;49;90m")  # grey53
+                        binary.install(dry_run=dry_run).model_dump(exclude={'overrides', 'bin_dir', 'hook_type'})
+                        sys.stderr.write("\033[00m\n")  # reset
+                    else:
+                        binary.load_or_install(fresh=True, dry_run=dry_run).model_dump(exclude={'overrides', 'bin_dir', 'hook_type'})
+            if IS_ROOT and LIB_DIR:
                 with SudoPermission(uid=0):
-                    os.system(f'chown -R {ARCHIVEBOX_USER} "{CONSTANTS.LIB_DIR.resolve()}"')
+                    if ARCHIVEBOX_USER == 0:
+                        os.system(f'chmod -R 777 "{LIB_DIR.resolve()}"')
+                    else:    
+                        os.system(f'chown -R {ARCHIVEBOX_USER} "{LIB_DIR.resolve()}"')
         except Exception as e:
-            if IS_ROOT:
-                print(f'[yellow]:warning:  Retrying {binary.name} installation with [red]sudo[/red]...[/yellow]')
-                with SudoPermission(uid=0):
-                    try:
-                        print(binary.load_or_install(fresh=True).model_dump(exclude={'provider_overrides', 'bin_dir', 'hook_type'}))
-                        os.system(f'chown -R {ARCHIVEBOX_USER} "{CONSTANTS.LIB_DIR.resolve()}"')
-                    except Exception as e:
-                        print(f'[red]:cross_mark: Failed to install {binary.name} as root: {e}[/red]')
-            else:
-                print(f'[red]:cross_mark: Failed to install {binary.name} as user {ARCHIVEBOX_USER}: {e}[/red]')
+            print(f'[red]:cross_mark: Failed to install {binary.name} as user {ARCHIVEBOX_USER}: {e}[/red]')
+            if binaries and len(binaries) == 1:
+                # if we are only installing a single binary, raise the exception so the user can see what went wrong
+                raise
                 
 
     from django.contrib.auth import get_user_model
     User = get_user_model()
 
-    if not User.objects.filter(is_superuser=True).exists():
+    if not User.objects.filter(is_superuser=True).exclude(username='system').exists():
         stderr('\n[+] Don\'t forget to create a new admin user for the Web UI...', color='green')
         stderr('    archivebox manage createsuperuser')
         # run_subcommand('manage', subcommand_args=['createsuperuser'], pwd=out_dir)
     
     print('\n[green][√] Set up ArchiveBox and its dependencies successfully.[/green]\n', file=sys.stderr)
     
-    from plugins_pkg.pip.apps import ARCHIVEBOX_BINARY
+    from plugins_pkg.pip.binaries import ARCHIVEBOX_BINARY
     
-    proc = run_shell([ARCHIVEBOX_BINARY.load().abspath, 'version'], capture_output=False, cwd=out_dir)
+    extra_args = []
+    if binproviders:
+        extra_args.append(f'--binproviders={",".join(binproviders)}')
+    if binaries:
+        extra_args.append(f'--binaries={",".join(binaries)}')
+    
+    proc = run_shell([ARCHIVEBOX_BINARY.load().abspath, 'version', *extra_args], capture_output=False, cwd=out_dir)
     raise SystemExit(proc.returncode)
 
 
@@ -1065,9 +1178,12 @@ def config(config_options_str: Optional[str]=None,
            config_options: Optional[List[str]]=None,
            get: bool=False,
            set: bool=False,
+           search: bool=False,
            reset: bool=False,
            out_dir: Path=DATA_DIR) -> None:
     """Get and set your ArchiveBox project configuration values"""
+
+    import abx.archivebox.reads
 
     from rich import print
 
@@ -1089,7 +1205,27 @@ def config(config_options_str: Optional[str]=None,
     no_args = not (get or set or reset or config_options)
 
     matching_config = {}
-    if get or no_args:
+    if search:
+        if config_options:
+            config_options = [get_real_name(key) for key in config_options]
+            matching_config = {key: settings.FLAT_CONFIG[key] for key in config_options if key in settings.FLAT_CONFIG}
+            for config_section in settings.CONFIGS.values():
+                aliases = config_section.aliases
+                
+                for search_key in config_options:
+                    # search all aliases in the section
+                    for alias_key, key in aliases.items():
+                        if search_key.lower() in alias_key.lower():
+                            matching_config[key] = config_section.model_dump()[key]
+                    
+                    # search all keys and values in the section
+                    for existing_key, value in config_section.model_dump().items():
+                        if search_key.lower() in existing_key.lower() or search_key.lower() in str(value).lower():
+                            matching_config[existing_key] = value
+            
+        print(printable_config(matching_config))
+        raise SystemExit(not matching_config)
+    elif get or no_args:
         if config_options:
             config_options = [get_real_name(key) for key in config_options]
             matching_config = {key: settings.FLAT_CONFIG[key] for key in config_options if key in settings.FLAT_CONFIG}
@@ -1128,14 +1264,15 @@ def config(config_options_str: Optional[str]=None,
 
         if new_config:
             before = settings.FLAT_CONFIG
-            matching_config = write_config_file(new_config, out_dir=DATA_DIR)
-            after = load_all_config()
+            matching_config = write_config_file(new_config)
+            after = {**load_all_config(), **abx.archivebox.reads.get_FLAT_CONFIG()}
             print(printable_config(matching_config))
 
             side_effect_changes = {}
             for key, val in after.items():
-                if key in settings.FLAT_CONFIG and (before[key] != after[key]) and (key not in matching_config):
+                if key in settings.FLAT_CONFIG and (str(before[key]) != str(after[key])) and (key not in matching_config):
                     side_effect_changes[key] = after[key]
+                    # import ipdb; ipdb.set_trace()
 
             if side_effect_changes:
                 stderr()
@@ -1175,7 +1312,7 @@ def schedule(add: bool=False,
     """Set ArchiveBox to regularly import URLs at specific times using cron"""
     
     check_data_folder()
-    from archivebox.plugins_pkg.pip.apps import ARCHIVEBOX_BINARY
+    from archivebox.plugins_pkg.pip.binaries import ARCHIVEBOX_BINARY
     from archivebox.config.permissions import USER
 
     Path(CONSTANTS.LOGS_DIR).mkdir(exist_ok=True)
@@ -1321,46 +1458,43 @@ def server(runserver_args: Optional[List[str]]=None,
     from django.core.management import call_command
     from django.contrib.auth.models import User
     
+    if not User.objects.filter(is_superuser=True).exclude(username='system').exists():
+        print()
+        # print('[yellow][!] No admin accounts exist, you must create one to be able to log in to the Admin UI![/yellow]')
+        print('[violet]Hint:[/violet] To create an [bold]admin username & password[/bold] for the [deep_sky_blue3][underline][link=http://{host}:{port}/admin]Admin UI[/link][/underline][/deep_sky_blue3], run:')
+        print('      [green]archivebox manage createsuperuser[/green]')
+        print()
     
 
-    print('[green][+] Starting ArchiveBox webserver...[/green]')
-    print('    > Logging errors to ./logs/errors.log')
-    if not User.objects.filter(is_superuser=True).exists():
-        print('[yellow][!] No admin users exist yet, you will not be able to edit links in the UI.[/yellow]')
-        print()
-        print('    [violet]Hint:[/violet] To create an admin user, run:')
-        print('        archivebox manage createsuperuser')
-        print()
+    host = '127.0.0.1'
+    port = '8000'
     
+    try:
+        host_and_port = [arg for arg in runserver_args if arg.replace('.', '').replace(':', '').isdigit()][0]
+        if ':' in host_and_port:
+            host, port = host_and_port.split(':')
+        else:
+            if '.' in host_and_port:
+                host = host_and_port
+            else:
+                port = host_and_port
+    except IndexError:
+        pass
+
+    print('[green][+] Starting ArchiveBox webserver...[/green]')
+    print(f'    [blink][green]>[/green][/blink] Starting ArchiveBox webserver on [deep_sky_blue4][link=http://{host}:{port}]http://{host}:{port}[/link][/deep_sky_blue4]')
+    print(f'    [green]>[/green] Log in to ArchiveBox Admin UI on [deep_sky_blue3][link=http://{host}:{port}/admin]http://{host}:{port}/admin[/link][/deep_sky_blue3]')
+    print('    > Writing ArchiveBox error log to ./logs/errors.log')
 
     if SHELL_CONFIG.DEBUG:
         if not reload:
             runserver_args.append('--noreload')  # '--insecure'
         call_command("runserver", *runserver_args)
     else:
-        host = '127.0.0.1'
-        port = '8000'
-        
-        try:
-            host_and_port = [arg for arg in runserver_args if arg.replace('.', '').replace(':', '').isdigit()][0]
-            if ':' in host_and_port:
-                host, port = host_and_port.split(':')
-            else:
-                if '.' in host_and_port:
-                    host = host_and_port
-                else:
-                    port = host_and_port
-        except IndexError:
-            pass
-
-        print(f'    [blink][green]>[/green][/blink] Starting ArchiveBox webserver on [deep_sky_blue4][link=http://{host}:{port}]http://{host}:{port}[/link][/deep_sky_blue4]')
-
         from queues.supervisor_util import start_server_workers
 
         print()
-        
         start_server_workers(host=host, port=port, daemonize=False)
-
         print("\n[i][green][🟩] ArchiveBox server shut down gracefully.[/green][/i]")
 
 

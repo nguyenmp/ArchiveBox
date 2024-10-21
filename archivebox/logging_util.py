@@ -510,7 +510,7 @@ def log_removal_finished(all_links: int, to_remove: int):
 ### Helpers
 
 @enforce_types
-def pretty_path(path: Union[Path, str], pwd: Union[Path, str]=DATA_DIR) -> str:
+def pretty_path(path: Union[Path, str], pwd: Union[Path, str]=DATA_DIR, color: bool=True) -> str:
     """convert paths like .../ArchiveBox/archivebox/../output/abc into output/abc"""
     pwd = str(Path(pwd))  # .resolve()
     path = str(path)
@@ -520,7 +520,10 @@ def pretty_path(path: Union[Path, str], pwd: Union[Path, str]=DATA_DIR) -> str:
 
     # replace long absolute paths with ./ relative ones to save on terminal output width
     if path.startswith(pwd) and (pwd != '/') and path != pwd:
-        path = path.replace(pwd, '[light_slate_blue].[/light_slate_blue]', 1)
+        if color:
+            path = path.replace(pwd, '[light_slate_blue].[/light_slate_blue]', 1)
+        else:
+            path = path.replace(pwd, '.', 1)
     
     # quote paths containing spaces
     if ' ' in path:
@@ -573,11 +576,14 @@ def printable_folder_status(name: str, folder: Dict) -> str:
 
     if folder['path']:
         if os.access(folder['path'], os.R_OK):
-            num_files = (
-                f'{len(os.listdir(folder["path"]))} files'
-                if Path(folder['path']).is_dir() else
-                printable_filesize(Path(folder['path']).stat().st_size)
-            )
+            try:
+                num_files = (
+                    f'{len(os.listdir(folder["path"]))} files'
+                    if os.path.isdir(folder['path']) else
+                    printable_filesize(Path(folder['path']).stat().st_size)
+                )
+            except PermissionError:
+                num_files = 'error'
         else:
             num_files = 'missing'
         

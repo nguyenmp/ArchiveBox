@@ -1,8 +1,7 @@
 __package__ = 'archivebox.config'
 
-import os
 import re
-import platform
+import sys
 
 from typing import Dict
 from pathlib import Path
@@ -17,8 +16,8 @@ from .paths import (
     DATA_DIR,
     ARCHIVE_DIR,
     get_collection_id,
-    get_LIB_DIR,
-    get_TMP_DIR,
+    get_machine_id,
+    get_machine_type,
 )
 from .permissions import (
     IS_ROOT,
@@ -39,12 +38,13 @@ class ConstantsDict(Mapping):
     PACKAGE_DIR: Path                   = PACKAGE_DIR
     DATA_DIR: Path                      = DATA_DIR
     ARCHIVE_DIR: Path                   = ARCHIVE_DIR
+    
+    MACHINE_TYPE: str                   = get_machine_type()
+    MACHINE_ID: str                     = get_machine_id()
     COLLECTION_ID: str                  = get_collection_id(DATA_DIR)
     
     # Host system
     VERSION: str                        = detect_installed_version(PACKAGE_DIR)
-    OS: str                             = platform.system().lower()    # darwin, linux, etc.
-    ARCH: str                           = platform.machine().lower()   # arm64, x86_64, aarch64, etc.
     IN_DOCKER: bool                     = IN_DOCKER
     
     # Permissions
@@ -55,6 +55,7 @@ class ConstantsDict(Mapping):
     RUNNING_AS_GID: int                 = RUNNING_AS_GID
     DEFAULT_PUID: int                   = DEFAULT_PUID
     DEFAULT_PGID: int                   = DEFAULT_PGID
+    IS_INSIDE_VENV: bool                = sys.prefix != sys.base_prefix
     
     # Source code dirs
     PACKAGE_DIR_NAME: str               = PACKAGE_DIR.name
@@ -95,14 +96,10 @@ class ConstantsDict(Mapping):
     
     # Runtime dirs
     TMP_DIR_NAME: str                   = 'tmp'
-    TMP_DIR: Path                       = get_TMP_DIR()
+    DEFAULT_TMP_DIR: Path               = DATA_DIR / TMP_DIR_NAME / MACHINE_ID    # ./data/tmp/abc3244323
+    
     LIB_DIR_NAME: str                   = 'lib'
-    LIB_DIR: Path                       = get_LIB_DIR()
-    LIB_PIP_DIR: Path                   = LIB_DIR / 'pip'
-    LIB_NPM_DIR: Path                   = LIB_DIR / 'npm'
-    LIB_BROWSERS_DIR: Path              = LIB_DIR / 'browsers'
-    LIB_BIN_DIR: Path                   = LIB_DIR / 'bin'
-    BIN_DIR: Path                       = LIB_BIN_DIR
+    DEFAULT_LIB_DIR: Path               = DATA_DIR / LIB_DIR_NAME / MACHINE_TYPE  # ./data/lib/arm64-linux-docker
 
     # Config constants
     TIMEZONE: str                       = 'UTC'
@@ -193,93 +190,10 @@ class ConstantsDict(Mapping):
         ".DS_Store",
         ".env",
         ".collection_id",
+        ".archivebox_id",
         "Dockerfile",
     ))
-
-    CODE_LOCATIONS = benedict({
-        'PACKAGE_DIR': {
-            'path': (PACKAGE_DIR).resolve(),
-            'enabled': True,
-            'is_valid': os.access(PACKAGE_DIR / '__main__.py', os.X_OK),                                                                  # executable
-        },
-        'TEMPLATES_DIR': {
-            'path': TEMPLATES_DIR.resolve(),
-            'enabled': True,
-            'is_valid': os.access(STATIC_DIR, os.R_OK) and os.access(STATIC_DIR, os.X_OK),                                                # read + list
-        },
-        'LIB_DIR': {
-            'path': LIB_DIR.resolve(),
-            'enabled': True,
-            'is_valid': os.access(LIB_DIR, os.R_OK) and os.access(LIB_DIR, os.X_OK) and os.access(LIB_DIR, os.W_OK),                      # read + write
-        },
-        'TMP_DIR': {
-            'path': TMP_DIR.resolve(),
-            'enabled': True,
-            'is_valid': os.access(TMP_DIR, os.R_OK) and os.access(TMP_DIR, os.X_OK) and os.access(TMP_DIR, os.W_OK),                      # read + write
-        },
-    })
         
-    DATA_LOCATIONS = benedict({
-        "DATA_DIR": {
-            "path": DATA_DIR.resolve(),
-            "enabled": True,
-            "is_valid": os.access(DATA_DIR, os.R_OK) and os.access(DATA_DIR, os.W_OK) and os.access(DATA_DIR, os.X_OK),
-            "is_mount": os.path.ismount(DATA_DIR.resolve()),
-        },
-        "CONFIG_FILE": {
-            "path": CONFIG_FILE.resolve(),
-            "enabled": True,
-            "is_valid":  os.access(CONFIG_FILE, os.R_OK) and os.access(CONFIG_FILE, os.W_OK),
-        },
-        "SQL_INDEX": {
-            "path": DATABASE_FILE.resolve(),
-            "enabled": True,
-            "is_valid": os.access(DATABASE_FILE, os.R_OK) and os.access(DATABASE_FILE, os.W_OK),
-            "is_mount": os.path.ismount(DATABASE_FILE.resolve()),
-        },
-        "QUEUE_DATABASE": {
-            "path": QUEUE_DATABASE_FILE.resolve(),
-            "enabled": True,
-            "is_valid": os.access(QUEUE_DATABASE_FILE, os.R_OK) and os.access(QUEUE_DATABASE_FILE, os.W_OK),
-            "is_mount": os.path.ismount(QUEUE_DATABASE_FILE.resolve()),
-        },
-        "ARCHIVE_DIR": {
-            "path": ARCHIVE_DIR.resolve(),
-            "enabled": True,
-            "is_valid": os.access(ARCHIVE_DIR, os.R_OK) and os.access(ARCHIVE_DIR, os.W_OK) and os.access(ARCHIVE_DIR, os.X_OK),
-            "is_mount": os.path.ismount(ARCHIVE_DIR.resolve()),
-        },
-        "SOURCES_DIR": {
-            "path": SOURCES_DIR.resolve(),
-            "enabled": True,
-            "is_valid": os.access(SOURCES_DIR, os.R_OK) and os.access(SOURCES_DIR, os.W_OK) and os.access(SOURCES_DIR, os.X_OK),
-        },
-        "LOGS_DIR": {
-            "path": LOGS_DIR.resolve(),
-            "enabled": True,
-            "is_valid": os.access(LOGS_DIR, os.R_OK) and os.access(LOGS_DIR, os.W_OK) and os.access(LOGS_DIR, os.X_OK),                              # read + write
-        },
-        # "CACHE_DIR": {
-        #     "path": CACHE_DIR.resolve(),
-        #     "enabled": True,
-        #     "is_valid": os.access(CACHE_DIR, os.R_OK) and os.access(CACHE_DIR, os.W_OK) and os.access(CACHE_DIR, os.X_OK),                        # read + write
-        # },
-        "PERSONAS_DIR": {
-            "path": PERSONAS_DIR.resolve(),
-            "enabled": os.access(PERSONAS_DIR, os.R_OK),
-            "is_valid": os.access(PERSONAS_DIR, os.R_OK) and os.access(PERSONAS_DIR, os.W_OK) and os.access(PERSONAS_DIR, os.X_OK),                 # read + write
-        },
-        'CUSTOM_TEMPLATES_DIR': {
-            'path': CUSTOM_TEMPLATES_DIR.resolve(),
-            'enabled': os.access(CUSTOM_TEMPLATES_DIR, os.R_OK),
-            'is_valid': os.access(CUSTOM_TEMPLATES_DIR, os.R_OK) and os.access(CUSTOM_TEMPLATES_DIR, os.X_OK),                                      # read
-        },
-        'USER_PLUGINS_DIR': {
-            'path': USER_PLUGINS_DIR.resolve(),
-            'enabled': os.access(USER_PLUGINS_DIR, os.R_OK),
-            'is_valid': os.access(USER_PLUGINS_DIR, os.R_OK) and os.access(USER_PLUGINS_DIR, os.X_OK),                                              # read
-        },
-    })
 
     @classmethod
     def __getitem__(cls, key: str):

@@ -159,18 +159,23 @@ def run_subcommand(subcommand: str,
     subcommand_args = subcommand_args or []
 
     from archivebox.misc.checks import check_migrations
-    from archivebox.config.legacy import setup_django
+    from archivebox.config.django import setup_django
     
     # print('DATA_DIR is', DATA_DIR)
     # print('pwd is', os.getcwd())    
 
-    cmd_requires_db = subcommand in archive_cmds
+    cmd_requires_db = (subcommand in archive_cmds)
     init_pending = '--init' in subcommand_args or '--quick-init' in subcommand_args
 
     check_db = cmd_requires_db and not init_pending
 
     setup_django(in_memory_db=subcommand in fake_db, check_db=check_db)
 
+    for ignore_pattern in ('help', '-h', '--help', 'version', '--version'):
+        if ignore_pattern in sys.argv[:4]:
+            cmd_requires_db = False
+            break
+    
     if subcommand in archive_cmds:
         if cmd_requires_db:
             check_migrations()
