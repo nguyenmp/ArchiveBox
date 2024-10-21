@@ -562,7 +562,7 @@ if DEBUG_TOOLBAR:
     ]
     MIDDLEWARE = [*MIDDLEWARE, 'debug_toolbar.middleware.DebugToolbarMiddleware']
 
-if DEBUG:
+if DEBUG and False:
     from django_autotyping.typing import AutotypingSettingsDict
 
     INSTALLED_APPS += ['django_autotyping']
@@ -575,7 +575,7 @@ if DEBUG:
 # https://github.com/bensi94/Django-Requests-Tracker (improved version of django-debug-toolbar)
 # Must delete archivebox/templates/admin to use because it relies on some things we override
 # visit /__requests_tracker__/ to access
-DEBUG_REQUESTS_TRACKER = True
+DEBUG_REQUESTS_TRACKER = False
 DEBUG_REQUESTS_TRACKER = DEBUG_REQUESTS_TRACKER and DEBUG
 if DEBUG_REQUESTS_TRACKER:
     import requests_tracker
