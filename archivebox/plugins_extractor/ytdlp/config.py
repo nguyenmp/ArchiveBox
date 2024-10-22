@@ -43,7 +43,7 @@ class YtdlpConfig(BaseConfigSet):
         '--write-description',
         '--write-info-json',
         '--skip-download',
-        '--cache-dir=/data/yt-dlp-cache/'
+        '--cache-dir=/data/yt-dlp-cache/',
         '--username=oauth2',
         '--password=',
         '--proxy=socks5://tor-socks-proxy:9150',
