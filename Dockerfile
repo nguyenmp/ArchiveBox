@@ -190,22 +190,44 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
 ######### Extractor Dependencies ##################################
 
 # Install apt dependencies
+# RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+#     echo "[+] Installing APT extractor dependencies globally using apt..." \
+#     && apt-get update -qq \
+#     && apt-get install -qq -y -t bookworm-backports \
+#         curl wget git ffmpeg ripgrep \
+#         # Packages we have also needed in the past:
+#         # youtube-dl wget2 aria2 python3-pyxattr rtmpdump libfribidi-bin mpv \
+#     && rm -rf /var/lib/apt/lists/* \
+#     # Save version info
+#     && ( \
+#         which curl && curl --version | head -n1 \
+#         && which wget && wget --version 2>&1 | head -n1 \
+#         && which git && git --version 2>&1 | head -n1 \
+#         && which rg && rg --version 2>&1 | head -n1 \
+#         && echo -e '\n\n' \
+#     ) | tee -a /VERSION.txt
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
-    echo "[+] Installing APT extractor dependencies globally using apt..." \
-    && apt-get update -qq \
-    && apt-get install -qq -y -t bookworm-backports \
-        curl wget git ffmpeg ripgrep \
+    echo "[+] Installing APT extractor dependencies globally using apt..."
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    apt-get update -qq
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    apt-get install -qq -y -t bookworm-backports curl wget git ffmpeg ripgrep
         # Packages we have also needed in the past:
         # youtube-dl wget2 aria2 python3-pyxattr rtmpdump libfribidi-bin mpv \
-    && rm -rf /var/lib/apt/lists/* \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    rm -rf /var/lib/apt/lists/*
     # Save version info
-    && ( \
-        which curl && curl --version | head -n1 \
-        && which wget && wget --version 2>&1 | head -n1 \
-        && which git && git --version 2>&1 | head -n1 \
-        && which rg && rg --version 2>&1 | head -n1 \
-        && echo -e '\n\n' \
-    ) | tee -a /VERSION.txt
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    which curl && curl --version | head -n1 | tee -a /VERSION.txt
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    which wget && wget --version 2>&1 | head -n1 | tee -a /VERSION.txt
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    which git && git --version 2>&1 | head -n1 | tee -a /VERSION.txt
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    which rg && rg --version 2>&1 | head -n1 | tee -a /VERSION.txt
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT \
+    echo -e '\n\n' | tee -a /VERSION.txt
+
 
 
 # Install chromium browser using playwright
