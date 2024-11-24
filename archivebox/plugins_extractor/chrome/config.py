@@ -81,7 +81,7 @@ class ChromeConfig(BaseConfigSet):
     # Chrome Binary
     CHROME_BINARY: str                      = Field(default='chrome')
     CHROME_DEFAULT_ARGS: List[str]          = Field(default=[
-        '--virtual-time-budget=15000',
+        # '--virtual-time-budget=15000',
         '--disable-features=DarkMode',
         "--run-all-compositor-stages-before-draw",
         "--hide-scrollbars",
