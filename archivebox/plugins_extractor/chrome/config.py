@@ -82,6 +82,7 @@ class ChromeConfig(BaseConfigSet):
     CHROME_BINARY: str                      = Field(default='chrome')
     CHROME_DEFAULT_ARGS: List[str]          = Field(default=[
         # '--virtual-time-budget=15000',
+        "--proxy-server=socks5://tor-socks-proxy:9150",
         '--disable-features=DarkMode',
         "--run-all-compositor-stages-before-draw",
         "--hide-scrollbars",

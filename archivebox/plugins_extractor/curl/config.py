@@ -21,6 +21,7 @@ class CurlConfig(BaseConfigSet):
         '--silent',
         '--location',
         '--compressed',
+        '--proxy', 'socks5://tor-socks-proxy:9150',
     ]
     CURL_EXTRA_ARGS: List[str] = []
     
